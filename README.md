@@ -57,19 +57,3 @@ Built entirely to run locally on Linux Mint using Python, OpenCV, Faster-Whisper
 5. Grab your generated `lecture_notes.typ` from the `output/` folder!
 
 *Save the file once you've pasted that in.*
-
----
-
-### 2. Make your first Git Commit
-Now that we have our folder structure, our `.gitignore` protecting us from giant files, and our `README.md` explaining the project, it is time to save this baseline into Git.
-
-Go back to your terminal (make sure you are inside the `lecture-to-typst` folder) and run these commands:
-
-```bash
-# Stage the README and the .gitignore files
-git add README.md .gitignore
-
-# Commit them to the repository history
-git commit -m "Initial commit: Added project structure, .gitignore, and README"
-```
-
