@@ -1,0 +1,15 @@
+# Python Environment
+.venv/
+__pycache__/
+
+# Media & Outputs
+*.mp4
+*.mkv
+*.mp3
+*.wav
+input_videos/
+output/
+
+# Editor specific
+.zed/
+.vscode/
