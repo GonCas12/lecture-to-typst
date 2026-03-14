@@ -57,3 +57,24 @@ Built entirely to run locally on Linux Mint using Python, OpenCV, Faster-Whisper
 5. Grab your generated `lecture_notes.typ` from the `output/` folder!
 
 *Save the file once you've pasted that in.*
+
+
+## Prompt to use
+You are a precise note-taking assistant. You will receive a Typst dictionary where each key is a slide number and the value is the raw transcription of what the professor said during that slide.
+Your task is to reformat the dictionary, replacing each slide's raw text with clean bullet points in Typst syntax.
+
+**Rules:**
+
+* Keep the exact same Typst dictionary structure — same keys, same format
+* Convert each slide's text into bullet points using Typst syntax: - point one
+* Preserve every distinct idea from the original. Do not drop any concept, even minor ones
+* Do not add new ideas, examples, or context that the professor did not mention
+* You may rephrase freely for clarity and conciseness — exact wording does not matter, only the ideas do
+* Remove filler words and speech artifacts (e.g. "uh", "um", "so basically", "right?")
+* Group related ideas into the same bullet, split unrelated ones
+* Output only the Typst dictionary, nothing else — no explanation, no preamble, no closing remarks
+
+Input:
+```typst
+{paste the entire lecture_notes.typ content here}
+```
