@@ -16,11 +16,11 @@ warnings.filterwarnings("ignore", message="FP16 is not supported on CPU")
 
 # ---------------------  Defaults  ---------------------
 DEFAULT_THRESHOLD = (
-    15.0  # mean pixel diff after downscale (lower than before since we resize)
+    3.0  # mean pixel diff after downscale (lower than before since we resize)
 )
 DEFAULT_MODEL = "base"
 DEFAULT_AUDIO_LOOKAHEAD = 1.0
-DEFAULT_MIN_SLIDE_DURATION = 3.0
+DEFAULT_MIN_SLIDE_DURATION = 4.0
 COARSE_JUMP = 60  # seconds between coarse probes
 FINE_RESOLUTION = 1.0  # stop bisecting when interval < this (seconds)
 RESIZE_WIDTH = 320  # downscale width; height auto-scales
@@ -237,11 +237,12 @@ def build_typst(
     slides: list[float],
     segments: list[dict],
     lookahead: float = DEFAULT_AUDIO_LOOKAHEAD,
+    start_slide: int = 1,  # <-- Added parameter
 ) -> str:
     print("\n📝 Building Typst output...")
     t0 = time.perf_counter()
 
-    lines = ["#let lecture_notes = ("]
+    lines = ["#let notes = ("]
     for i, slide_start in enumerate(slides):
         slide_end = slides[i + 1] if i + 1 < len(slides) else float("inf")
         window_start = slide_start - lookahead
@@ -251,8 +252,9 @@ def build_typst(
         ).strip()
 
         if text:
-            print(f"   ➔ Slide {i + 1}")
-            lines.append(f'  "slide_{i + 1}": [{escape_typst(text)}],')
+            current_slide_num = i + start_slide
+            print(f"   ➔ Slide {current_slide_num}")
+            lines.append(f'  "{current_slide_num}": [{escape_typst(text)}],')
 
     lines.append(")")
     print(f"   ⏱  Build: {fmt_duration(time.perf_counter() - t0)}")
@@ -298,6 +300,60 @@ def format_with_gemini(raw_typ: str, output_path: str) -> None:
     print(f"   ✅ Formatted notes → {output_path}")
 
 
+# --------------- Using provided transcriptions as .vtt ---------------
+
+
+def parse_vtt(vtt_path: str) -> list[dict]:
+    print(f"\n📄 Found existing transcription! Parsing {os.path.basename(vtt_path)}...")
+    segments = []
+
+    # Matches VTT timestamps like "00:01:23.456 --> 00:01:28.000" or "01:23.456 --> 01:28.000"
+    pattern = re.compile(
+        r"(?:(\d{2}):)?(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(?:(\d{2}):)?(\d{2}):(\d{2})\.(\d{3})"
+    )
+
+    def to_seconds(h, m, s, ms):
+        h = int(h) if h else 0
+        return h * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
+
+    try:
+        with open(vtt_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception as e:
+        print(f"   ⚠️ Could not read VTT file: {e}")
+        return []
+
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        match = pattern.search(line)
+        if match:
+            # Parse start and end times
+            sh, sm, ss, sms = match.group(1, 2, 3, 4)
+            eh, em, es, ems = match.group(5, 6, 7, 8)
+
+            start_sec = to_seconds(sh, sm, ss, sms)
+            end_sec = to_seconds(eh, em, es, ems)
+
+            # The next line(s) contain the text until a blank line
+            i += 1
+            text_lines = []
+            while i < len(lines) and lines[i].strip() != "":
+                # Remove common VTT styling tags like <c.color> or <b>
+                clean_text = re.sub(r"<[^>]+>", "", lines[i].strip())
+                text_lines.append(clean_text)
+                i += 1
+
+            segments.append(
+                {"text": " ".join(text_lines), "start": start_sec, "end": end_sec}
+            )
+        else:
+            i += 1
+
+    print(f"   ✅ Parsed {len(segments)} transcription segments.")
+    return segments
+
+
 # --------------- Per-video pipeline ---------------
 
 
@@ -312,22 +368,44 @@ def process_one(video_path: str, args) -> None:
     raw_path = os.path.join(args.output_dir, f"{stem}_notes.typ")
     formatted_path = os.path.join(args.output_dir, f"{stem}_formatted.typ")
 
+    # Check for an accompanying .vtt file
+    vtt_files = [
+        f
+        for f in os.listdir(os.path.dirname(video_path) or ".")
+        if f.startswith(stem) and f.endswith(".vtt")
+    ]
+
+    vtt_path = (
+        os.path.join(os.path.dirname(video_path), vtt_files[0]) if vtt_files else None
+    )
+    has_vtt = vtt_path is not None and os.path.exists(vtt_path)
+
     print(f"\n{'=' * 60}")
     print(f"▶  {video_path}")
     print(f"{'=' * 60}")
 
-    device = check_gpu()
-
-    print("\n⚡ Running slide detection and transcription in parallel...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        slides_future = pool.submit(
-            detect_slides, video_path, args.threshold, args.min_slide_duration
+    if has_vtt:
+        print("\n⚡ VTT file detected. Running slide detection only...")
+        # Run slide detection sequentially since we don't need Whisper
+        slides = detect_slides(video_path, args.threshold, args.min_slide_duration)
+        segments = parse_vtt(vtt_path)
+    else:
+        # Fallback to original parallel Whisper + Slide Detection
+        device = check_gpu()
+        print(
+            "\n⚡ No VTT file found. Running slide detection and Whisper transcription in parallel..."
         )
-        segments_future = pool.submit(transcribe_audio, video_path, device, args.model)
-        slides = slides_future.result()
-        segments = segments_future.result()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            slides_future = pool.submit(
+                detect_slides, video_path, args.threshold, args.min_slide_duration
+            )
+            segments_future = pool.submit(
+                transcribe_audio, video_path, device, args.model
+            )
+            slides = slides_future.result()
+            segments = segments_future.result()
 
-    typst_content = build_typst(slides, segments, args.lookahead)
+    typst_content = build_typst(slides, segments, args.lookahead, args.start_slide)
 
     with open(raw_path, "w", encoding="utf-8") as f:
         f.write(typst_content)
@@ -348,8 +426,31 @@ def process_one(video_path: str, args) -> None:
 
 
 def main() -> None:
+    examples = """
+Examples of how to use this tool:
+--------------------------------------------------------------------------------
+1. Standard run (detect slides, Whisper transcribe, Gemini format):
+    python script.py "lecture_01.mp4"
+
+2. Process multiple videos at once:
+    python script.py "lecture_01.mp4" "lecture_02.mp4"
+
+3. Skip Gemini formatting (fastest way to get raw notes):
+    python script.py "lecture_01.mp4" --no-gemini
+
+4. Part 2 of a lecture (start numbering at slide 45):
+    python script.py "lecture_part2.mp4" --start-slide 45
+
+5. Using a downloaded YouTube VTT with custom slide sensitivity:
+    python script.py "youtube_class.mp4" --threshold 10.0 --no-gemini
+--------------------------------------------------------------------------------
+Note: If a .vtt file with the exact same name as the video exists in the
+same folder, the script will automatically use it and skip Whisper entirely!
+"""
     parser = argparse.ArgumentParser(
-        description="Convert lecture video(s) into Typst notes, then format with Gemini CLI."
+        description="Convert lecture video(s) into Typst notes, then format with Gemini CLI.",
+        epilog=examples,
+        formatter_class=argparse.RawDescriptionHelpFormatter,  # This keeps your line breaks!
     )
     parser.add_argument("videos", nargs="+", help="One or more video files to process.")
     parser.add_argument(
@@ -384,6 +485,12 @@ def main() -> None:
         "--no-gemini",
         action="store_true",
         help="Skip Gemini formatting, only produce raw notes.",
+    )
+    parser.add_argument(
+        "--start-slide",
+        type=int,
+        default=1,
+        help="Starting number for the first slide (default: 1).",
     )
     args = parser.parse_args()
 
